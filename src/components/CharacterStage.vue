@@ -1,0 +1,861 @@
+<script setup lang="ts">
+import { applyPalette, GIFEncoder, quantize } from 'gifenc'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+
+interface MotionItem {
+  key: string
+  label: string
+}
+
+interface ControlItem {
+  key: string
+  label: string
+  type: 'motion' | 'effect'
+}
+
+interface EffectItem {
+  key: string // lib 中的根类名
+  label: string
+  motion?: string // 同时触发的角色动作；省略表示不动角色
+  images: string[] // 需要预加载的 png id 列表
+  scriptId: string // 对应 public/cjs 下脚本文件名（无扩展）
+  hideCharacter?: boolean // 播放期间隐藏底层角色（必杀过场自带角色绘制）
+  scale?: number // 可选：覆盖默认 effectScale
+  // 可选：覆盖默认锚点（0~1，相对 canvas 宽高的比例）
+  anchor?: { x: number, y: number }
+}
+
+interface GifExportQualityOption {
+  key: 'compact' | 'standard' | 'balanced' | 'high' | 'ultra'
+  label: string
+  description: string
+  width: number
+  height: number
+  tickStep: number
+  maxTicks: number
+  maxColors: number
+}
+
+type MotionKey = 'wait' | 'stbwait' | 'attack' | 'double' | 'triple' | 'ability' | 'mortal_A' | 'damage' | 'win' | 'down'
+
+const characterId = 'npc_3040638000_01'
+const cjsBase = `${import.meta.env.BASE_URL}cjs`
+const stageWidth = 360
+const stageHeight = 420
+const exportButtonClass = 'apple-cta w-full shrink-0 sm:w-auto'
+const characterScale = 0.4
+const characterAnchor = { x: 0.4, y: 0.4 }
+const attackComboSequence: MotionKey[] = ['attack', 'double', 'triple']
+const effectAnchor = { x: 0.5, y: 0.5 }
+const effectScale = 0.5
+const gifExportBaseQualityOptions: GifExportQualityOption[] = [
+  {
+    key: 'compact',
+    label: '紧凑',
+    description: '体积优先',
+    width: 180,
+    height: 210,
+    tickStep: 3,
+    maxTicks: 300,
+    maxColors: 96,
+  },
+  {
+    key: 'standard',
+    label: '标准',
+    description: '更清晰一些',
+    width: 220,
+    height: 257,
+    tickStep: 2,
+    maxTicks: 330,
+    maxColors: 128,
+  },
+  {
+    key: 'balanced',
+    label: '平衡',
+    description: '推荐默认',
+    width: 240,
+    height: 280,
+    tickStep: 2,
+    maxTicks: 360,
+    maxColors: 160,
+  },
+  {
+    key: 'high',
+    label: '高清',
+    description: '更高分辨率，高像素屏会更清晰',
+    width: 300,
+    height: 350,
+    tickStep: 1,
+    maxTicks: 420,
+    maxColors: 224,
+  },
+  {
+    key: 'ultra',
+    label: '极清',
+    description: '使用当前设备原始画布像素',
+    width: 360,
+    height: 420,
+    tickStep: 1,
+    maxTicks: 480,
+    maxColors: 256,
+  },
+]
+
+const motions: MotionItem[] = [
+  { key: 'wait', label: '待机1' },
+  { key: 'stbwait', label: '待机2' },
+  { key: 'combo', label: '普攻' },
+  { key: 'ability', label: '技能' },
+  { key: 'down', label: '倒地' },
+  { key: 'win', label: '胜利' },
+]
+
+const effects: EffectItem[] = [
+  {
+    key: 'nsp_3040638000_01_s2',
+    label: '奥义动画',
+    // NSP 是含角色的完整过场，不需要同时触发角色 mortal_A（两者会穿模）
+    images: ['nsp_3040638000_01_s2_a', 'nsp_3040638000_01_s2_b'],
+    scriptId: 'nsp_3040638000_01_s2',
+    hideCharacter: true,
+    // NSP 内部以 (0,0) 为原点绘制、内容中心约在 (300, 330)。
+    // 在 360x420 画布上用 0.6 缩放 + 左上对齐，内容中心会落在 (180,198)，接近画布中心。
+    scale: 0.3,
+    anchor: { x: 0, y: 0 },
+  },
+]
+
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+const status = ref<'loading' | 'ready' | 'error'>('loading')
+const errorMessage = ref('')
+const exportErrorMessage = ref('')
+const currentMotion = ref<MotionKey>('wait')
+const queuedMotions = ref<MotionKey[]>([])
+const selectedControlKey = ref<string>('wait')
+const selectedGifQualityKey = ref<GifExportQualityOption['key']>('balanced')
+const isExportingGif = ref(false)
+
+const stage = shallowRef<any>(null)
+const motionRoot = shallowRef<any>(null)
+const characterClip = shallowRef<any>(null)
+const motionSequenceReturn = ref<MotionKey | null>(null)
+const motionSequenceHandler = shallowRef<(() => void) | null>(null)
+const activeMotionClip = shallowRef<any>(null)
+const motionCycleCount = ref(0)
+const activeEffect = ref<string | null>(null)
+const activeEffectClip = shallowRef<any>(null)
+const activeEffectPlaybackClip = shallowRef<any>(null)
+const activeEffectTickHandler = shallowRef<(() => void) | null>(null)
+const activeEffectCycleCount = ref(0)
+
+const isReady = computed(() => status.value === 'ready')
+const controlItems = computed<ControlItem[]>(() => [
+  ...motions.map(motion => ({
+    key: motion.key,
+    label: motion.label,
+    type: 'motion' as const,
+  })),
+  ...effects.map(effect => ({
+    key: effect.key,
+    label: effect.label,
+    type: 'effect' as const,
+  })),
+])
+const gifSourceWidth = computed(() => Math.max(stageWidth, canvasRef.value?.width ?? stageWidth))
+const gifSourceHeight = computed(() => Math.max(stageHeight, canvasRef.value?.height ?? stageHeight))
+const gifExportQualityOptions = computed<GifExportQualityOption[]>(() => {
+  return gifExportBaseQualityOptions.map((option) => {
+    if (option.key === 'high') {
+      return {
+        ...option,
+        width: Math.max(option.width, Math.round(gifSourceWidth.value * 0.75)),
+        height: Math.max(option.height, Math.round(gifSourceHeight.value * 0.75)),
+      }
+    }
+
+    if (option.key === 'ultra') {
+      return {
+        ...option,
+        width: gifSourceWidth.value,
+        height: gifSourceHeight.value,
+      }
+    }
+
+    return option
+  })
+})
+const selectedControl = computed(() =>
+  controlItems.value.find(item => item.key === selectedControlKey.value) ?? controlItems.value[0] ?? null,
+)
+const selectedGifQuality = computed(() =>
+  gifExportQualityOptions.value.find(option => option.key === selectedGifQualityKey.value) ?? gifExportQualityOptions.value[2],
+)
+const selectedGifQualityIndex = computed({
+  get() {
+    const index = gifExportQualityOptions.value.findIndex(option => option.key === selectedGifQualityKey.value)
+    return index >= 0 ? index : 2
+  },
+  set(index: number) {
+    const nextOption = gifExportQualityOptions.value[index]
+    if (nextOption)
+      selectedGifQualityKey.value = nextOption.key
+  },
+})
+const exportButtonLabel = computed(() => {
+  if (isExportingGif.value)
+    return '导出中…'
+
+  return selectedControl.value
+    ? `导出 ${selectedControl.value.label} GIF`
+    : '导出 GIF'
+})
+
+function setupGlobals() {
+  const w = window as any
+  w.Game = w.Game ?? {}
+  w.Game.setting = w.Game.setting ?? { cjs_mode: 0 }
+  w.Game.version = w.Game.version ?? -1
+  w.Game.imgUri = w.Game.imgUri ?? ''
+  w.lib = w.lib ?? {}
+  w.images = w.images ?? {}
+  w.ss = w.ss ?? {}
+  // GBF 资源里偶尔出现 require([...], cb) 这种 RequireJS 调用，stub 掉避免报错
+  if (typeof w.require !== 'function')
+    w.require = (_deps: string[], _cb?: (...args: any[]) => void) => {}
+  // GBF 官方 createjs 末尾用 AMD `define({...})` 导出，没有 RequireJS 时
+  // 我们把模块对象直接挂到 window.createjs；同时兼容 define(name, deps, factory) 形式
+  if (typeof w.define !== 'function') {
+    const define = (a: any, b?: any, c?: any) => {
+      const factory = typeof c === 'function' ? c : (typeof b === 'function' ? b : null)
+      const value = factory ? factory() : (typeof a === 'object' ? a : null)
+      if (value && typeof value === 'object')
+        w.createjs = { ...(w.createjs ?? {}), ...value }
+    }
+    ;(define as any).amd = {}
+    w.define = define
+  }
+}
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error(`图片加载失败: ${src}`))
+    img.src = src
+  })
+}
+
+const scriptCache = new Map<string, Promise<void>>()
+function loadScript(src: string) {
+  if (scriptCache.has(src))
+    return scriptCache.get(src)!
+  const promise = new Promise<void>((resolve, reject) => {
+    const exists = document.querySelector<HTMLScriptElement>(`script[data-cjs="${src}"]`)
+    if (exists) {
+      resolve()
+      return
+    }
+    const el = document.createElement('script')
+    el.src = src
+    el.async = false
+    el.dataset.cjs = src
+    el.onload = () => resolve()
+    el.onerror = () => reject(new Error(`脚本加载失败: ${src}`))
+    document.head.appendChild(el)
+  })
+  scriptCache.set(src, promise)
+  return promise
+}
+
+function buildStage() {
+  const canvas = canvasRef.value
+  const w = window as any
+  const createjs = w.createjs
+  if (!canvas || !createjs)
+    return
+
+  const dpr = window.devicePixelRatio || 1
+  // 强制走 2d 渲染器，避免 GBF createjs 的 WebGL 分支在普通页面里无法正确初始化
+  canvas.setAttribute('cjs-context', '2d')
+  canvas.setAttribute('cjs-noclip', '')
+  canvas.width = stageWidth * dpr
+  canvas.height = stageHeight * dpr
+
+  const newStage = new createjs.Stage(canvas)
+  // 用 stage scale 抵消 canvas 的高 DPR 分辨率，CSS 尺寸保持 stageWidth/Height
+  newStage.scaleX = dpr
+  newStage.scaleY = dpr
+
+  const Ctor = w.lib?.[characterId]
+  if (!Ctor)
+    throw new Error('未找到角色构造函数')
+
+  const npc = new Ctor()
+  npc.scaleX = characterScale
+  npc.scaleY = characterScale
+  npc.x = stageWidth * characterAnchor.x
+  npc.y = stageHeight * characterAnchor.y
+  newStage.addChild(npc)
+  characterClip.value = npc
+
+  // 顶层 npc 是一个 1 帧的 MovieClip，里面 npc_3040638000_01 才是真正带动作 label 的容器
+  const inner = npc[characterId] ?? npc
+  motionRoot.value = inner
+
+  stage.value = newStage
+  newStage.update()
+
+  // GBF createjs 暴露的是 setFPS(fps, force)，没有 framerate setter；第二个参数 true 绕过 15fps 限制
+  createjs.Ticker.setFPS?.(30, true)
+  createjs.Ticker.addEventListener('tick', newStage)
+  playMotion(currentMotion.value)
+}
+
+function disposeStage() {
+  const w = window as any
+  const createjs = w.createjs
+  clearMotionSequence()
+  stopActiveEffect()
+  if (stage.value && createjs) {
+    createjs.Ticker.removeEventListener('tick', stage.value)
+    stage.value.removeAllChildren()
+  }
+  stage.value = null
+  motionRoot.value = null
+  characterClip.value = null
+}
+
+function stopActiveEffect() {
+  const w = window as any
+  const createjs = w.createjs
+  const clip = activeEffectClip.value
+  const handler = activeEffectTickHandler.value
+  if (createjs?.Ticker && handler)
+    createjs.Ticker.removeEventListener('tick', handler)
+
+  if (clip)
+    stage.value?.removeChild(clip)
+
+  const npc = characterClip.value
+  if (npc)
+    npc.visible = true
+
+  activeEffect.value = null
+  activeEffectClip.value = null
+  activeEffectPlaybackClip.value = null
+  activeEffectTickHandler.value = null
+}
+
+function getMotionClip(key: MotionKey) {
+  const target = motionRoot.value
+  if (!target)
+    return null
+
+  return target[`${characterId}_${key}`] ?? null
+}
+
+function clearMotionSequence() {
+  const w = window as any
+  const createjs = w.createjs
+  const handler = motionSequenceHandler.value
+  if (createjs?.Ticker && handler)
+    createjs.Ticker.removeEventListener('tick', handler)
+
+  queuedMotions.value = []
+  motionSequenceReturn.value = null
+  motionSequenceHandler.value = null
+  activeMotionClip.value = null
+}
+
+function startMotion(key: MotionKey) {
+  currentMotion.value = key
+  const target = motionRoot.value
+  activeMotionClip.value = getMotionClip(key)
+  activeMotionClip.value?.gotoAndPlay?.(0)
+  if (target?.gotoAndPlay)
+    target.gotoAndPlay(key)
+}
+
+function playMotionSequence(sequence: MotionKey[], options?: { repeat?: boolean, returnMotion?: MotionKey }) {
+  const target = motionRoot.value
+  const w = window as any
+  const createjs = w.createjs
+  if (!target?.gotoAndPlay || !createjs?.Ticker || sequence.length === 0)
+    return
+
+  clearMotionSequence()
+  const [firstMotion, ...restMotions] = sequence
+  const originalSequence = [...sequence]
+  const shouldRepeat = options?.repeat ?? false
+  queuedMotions.value = restMotions
+  motionSequenceReturn.value = options?.returnMotion ?? null
+
+  const onTick = () => {
+    const clip = activeMotionClip.value
+    const totalFrames = clip?.totalFrames ?? clip?.timeline?.duration ?? 0
+    if (!clip || totalFrames <= 0 || clip.currentFrame < totalFrames - 1)
+      return
+
+    const nextMotion = queuedMotions.value.shift()
+    if (nextMotion) {
+      startMotion(nextMotion)
+      return
+    }
+
+    motionCycleCount.value += 1
+
+    if (shouldRepeat) {
+      queuedMotions.value = originalSequence.slice(1)
+      startMotion(firstMotion)
+      return
+    }
+
+    const nextIdleMotion = motionSequenceReturn.value
+    clearMotionSequence()
+    if (nextIdleMotion)
+      startMotion(nextIdleMotion)
+  }
+
+  motionSequenceHandler.value = onTick
+  createjs.Ticker.addEventListener('tick', onTick)
+  startMotion(firstMotion)
+}
+
+function playMotion(key: string) {
+  stopActiveEffect()
+  motionCycleCount.value = 0
+  if (key === 'combo') {
+    playMotionSequence(attackComboSequence, { repeat: true })
+    return
+  }
+
+  playMotionSequence([key as MotionKey], { repeat: true })
+}
+
+function isMotionActive(key: string) {
+  if (activeEffect.value)
+    return false
+
+  return key === 'combo'
+    ? attackComboSequence.includes(currentMotion.value)
+    : currentMotion.value === key
+}
+
+function handleControlClick(item: ControlItem) {
+  selectedControlKey.value = item.key
+  if (item.type === 'effect') {
+    const effect = effects.find(candidate => candidate.key === item.key)
+    if (effect)
+      playEffect(effect)
+    return
+  }
+
+  playMotion(item.key)
+}
+
+function isControlActive(item: ControlItem) {
+  return item.type === 'effect'
+    ? activeEffect.value === item.key
+    : isMotionActive(item.key)
+}
+
+function playEffect(effect: EffectItem, preserveCycleCount = false) {
+  const w = window as any
+  const createjs = w.createjs
+  const Ctor = w.lib?.[effect.key]
+  if (!stage.value || !createjs || !Ctor)
+    return
+
+  if (!preserveCycleCount)
+    activeEffectCycleCount.value = 0
+
+  clearMotionSequence()
+  stopActiveEffect()
+  if (effect.motion)
+    playMotion(effect.motion)
+  activeEffect.value = effect.key
+
+  // 必杀过场自带角色绘制，需隐藏底层 npc 避免重叠
+  const npc = characterClip.value
+  if (effect.hideCharacter && npc)
+    npc.visible = false
+
+  const mc = new Ctor()
+  const sc = effect.scale ?? effectScale
+  const anchor = effect.anchor ?? effectAnchor
+  mc.scaleX = sc
+  mc.scaleY = sc
+  mc.x = stageWidth * anchor.x
+  mc.y = stageHeight * anchor.y
+  // 一次性播放：跑完后自行移除
+  mc.loop = false
+  if ('framerate' in mc)
+    mc.framerate = 30
+  stage.value.addChild(mc)
+  mc.gotoAndPlay?.(0)
+  activeEffectClip.value = mc
+  const effectRootClip = mc[effect.key] ?? mc
+  activeEffectPlaybackClip.value = effectRootClip[`${effect.key}_special`] ?? effectRootClip
+
+  const onTick = () => {
+    const playbackClip = activeEffectPlaybackClip.value
+    const total = playbackClip?.totalFrames ?? playbackClip?.timeline?.duration ?? 0
+    if (total > 0 && playbackClip.currentFrame >= total - 1) {
+      activeEffectCycleCount.value += 1
+      playEffect(effect, true)
+    }
+  }
+  activeEffectTickHandler.value = onTick
+  createjs.Ticker.addEventListener('tick', onTick)
+}
+
+function captureGifFrame(
+  context: CanvasRenderingContext2D,
+  sourceCanvas: HTMLCanvasElement,
+  quality: GifExportQualityOption,
+) {
+  context.clearRect(0, 0, quality.width, quality.height)
+  context.drawImage(sourceCanvas, 0, 0, quality.width, quality.height)
+  return new Uint8ClampedArray(context.getImageData(0, 0, quality.width, quality.height).data)
+}
+
+function findTransparentIndex(palette: number[][]) {
+  return palette.findIndex(color => color[3] === 0)
+}
+
+function sanitizeGifName(name: string) {
+  return name.replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase()
+}
+
+async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElement, quality: GifExportQualityOption) {
+  const exportCanvas = document.createElement('canvas')
+  exportCanvas.width = quality.width
+  exportCanvas.height = quality.height
+
+  const exportContext = exportCanvas.getContext('2d', { willReadFrequently: true })
+  if (!exportContext)
+    throw new Error('无法创建 GIF 导出画布')
+
+  const context = exportContext
+
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+
+  const w = window as any
+  const createjs = w.createjs
+  if (!createjs?.Ticker)
+    throw new Error('CreateJS Ticker 不可用，无法导出 GIF')
+
+  return await new Promise<Uint8ClampedArray[]>((resolve, reject) => {
+    const frames: Uint8ClampedArray[] = []
+    let tickCount = 0
+    let hasStarted = false
+    let initialMotionCycles = 0
+    let initialEffectCycles = 0
+
+    function finish() {
+      createjs.Ticker.removeEventListener('tick', onTick)
+      if (!frames.length)
+        frames.push(captureGifFrame(context, sourceCanvas, quality))
+      resolve(frames)
+    }
+
+    function fail(error: unknown) {
+      createjs.Ticker.removeEventListener('tick', onTick)
+      reject(error)
+    }
+
+    function onTick() {
+      tickCount += 1
+      if (frames.length === 0 || tickCount % quality.tickStep === 0)
+        frames.push(captureGifFrame(context, sourceCanvas, quality))
+
+      if (item.type === 'effect') {
+        if (activeEffect.value === item.key)
+          hasStarted = true
+        if (hasStarted && activeEffectCycleCount.value > initialEffectCycles) {
+          finish()
+          return
+        }
+        if (hasStarted && activeEffect.value !== item.key) {
+          finish()
+          return
+        }
+      }
+      else {
+        if (item.key === 'combo') {
+          if (attackComboSequence.includes(currentMotion.value))
+            hasStarted = true
+        }
+        else if (currentMotion.value === item.key) {
+          hasStarted = true
+        }
+
+        if (hasStarted && motionCycleCount.value > initialMotionCycles) {
+          finish()
+          return
+        }
+      }
+
+      if (tickCount >= quality.maxTicks)
+        finish()
+    }
+
+    createjs.Ticker.addEventListener('tick', onTick)
+
+    try {
+      if (item.type === 'effect') {
+        const effect = effects.find(candidate => candidate.key === item.key)
+        if (!effect)
+          throw new Error('未找到要导出的特效配置')
+        playEffect(effect)
+        initialEffectCycles = activeEffectCycleCount.value
+      }
+      else {
+        playMotion(item.key)
+        initialMotionCycles = motionCycleCount.value
+      }
+    }
+    catch (error) {
+      fail(error)
+    }
+  })
+}
+
+function downloadGif(bytes: Uint8Array, fileName: string) {
+  const buffer = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(buffer).set(bytes)
+  const blob = new Blob([buffer], { type: 'image/gif' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+async function exportSelectedGif() {
+  if (isExportingGif.value)
+    return
+
+  const item = selectedControl.value
+  const sourceCanvas = canvasRef.value
+  if (!item || !sourceCanvas)
+    return
+
+  isExportingGif.value = true
+  exportErrorMessage.value = ''
+
+  try {
+    const quality = selectedGifQuality.value
+    const gifExportDelay = Math.round(1000 / (30 / quality.tickStep))
+    const frames = await recordGifFrames(item, sourceCanvas, quality)
+    const rgba = new Uint8Array(frames.length * frames[0].length)
+    let offset = 0
+    for (const frame of frames) {
+      rgba.set(frame, offset)
+      offset += frame.length
+    }
+
+    const palette = quantize(rgba, quality.maxColors, {
+      format: 'rgba4444',
+      oneBitAlpha: true,
+      clearAlpha: false,
+    })
+    const transparentIndex = findTransparentIndex(palette)
+
+    const gif = GIFEncoder()
+    frames.forEach((frame, index) => {
+      const bitmap = applyPalette(frame, palette, 'rgba4444')
+      gif.writeFrame(bitmap, quality.width, quality.height, {
+        palette: index === 0 ? palette : undefined,
+        delay: gifExportDelay,
+        repeat: 0,
+        transparent: transparentIndex >= 0,
+        transparentIndex: transparentIndex >= 0 ? transparentIndex : 0,
+        // 透明背景动画必须在下一帧前清掉上一帧，否则移动角色会留下残影。
+        dispose: 2,
+      })
+    })
+    gif.finish()
+
+    downloadGif(gif.bytes(), `${sanitizeGifName(characterId)}_${sanitizeGifName(item.key)}.gif`)
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    exportErrorMessage.value = `GIF 导出失败：${message}`
+  }
+  finally {
+    isExportingGif.value = false
+  }
+}
+
+onMounted(async () => {
+  try {
+    setupGlobals()
+    // 必须先加载 GBF 官方 createjs（提供 createjs.Config 等 API），再加载角色资源
+    await loadScript(`${cjsBase}/createjs.js`)
+
+    // 收集所有需要加载的图片与脚本（角色 + 命中/必杀特效）
+    const imageIds = new Set<string>([characterId])
+    const scriptIds = new Set<string>([characterId])
+    for (const effect of effects) {
+      scriptIds.add(effect.scriptId)
+      for (const img of effect.images) imageIds.add(img)
+    }
+
+    const w = window as any
+    await Promise.all([
+      ...Array.from(imageIds).map(id =>
+        loadImage(`${cjsBase}/${id}.png`).then((img) => {
+          w.images[id] = img
+        }),
+      ),
+      ...Array.from(scriptIds).map(id => loadScript(`${cjsBase}/${id}.js`)),
+    ])
+    buildStage()
+    status.value = 'ready'
+  }
+  catch (e) {
+    status.value = 'error'
+    errorMessage.value = e instanceof Error ? e.message : String(e)
+  }
+})
+
+onBeforeUnmount(() => {
+  disposeStage()
+})
+</script>
+
+<template>
+  <div class="mx-auto max-w-[980px] w-full px-5 sm:px-8">
+    <section class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
+      <div class="apple-stage-shell">
+        <div class="mb-4 flex flex-wrap items-center gap-2 text-white/72">
+          <span class="apple-dark-chip-status">
+            <i
+              class="h-2 w-2 rounded-full"
+              :class="status === 'ready'
+                ? 'bg-[#30d158]'
+                : status === 'loading'
+                  ? 'animate-pulse bg-[#ffd60a]'
+                  : 'bg-[#ff453a]'"
+            />
+            {{ status === 'ready' ? '就绪' : status === 'loading' ? '加载中' : '失败' }}
+          </span>
+          <span class="apple-dark-chip">
+            {{ characterId }}
+          </span>
+        </div>
+
+        <div class="relative mx-auto max-w-[360px] w-full" :style="{ aspectRatio: `${stageWidth} / ${stageHeight}` }">
+          <canvas
+            ref="canvasRef"
+            class="relative z-[1] block h-full w-full drop-shadow-[0_18px_48px_rgba(0,0,0,0.48)]"
+          />
+          <div v-if="status !== 'ready'" class="absolute inset-0 z-[2] flex flex-col items-center justify-center gap-3 rounded-[20px] bg-[rgba(0,0,0,0.72)] px-5 text-center text-[14px] text-white leading-[1.43] tracking-[-0.224px]">
+            <template v-if="status === 'loading'">
+              <span class="h-8 w-8 animate-spin border-2 border-white/20 border-t-white rounded-full border-solid" />
+              <span>资源加载中…</span>
+            </template>
+            <template v-else>
+              <span class="h-9 w-9 fc rounded-full bg-white/10 text-[17px] text-white font-600">!</span>
+              <span class="max-w-[240px] text-white/72">{{ errorMessage }}</span>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="apple-panel">
+        <div class="flex flex-col gap-4">
+          <div>
+            <p class="apple-kicker m-0 text-muted">
+              Actions
+            </p>
+            <p class="apple-body-compact m-0 mt-2 text-ink">
+              动作预览
+            </p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <button
+              v-for="item in controlItems"
+              :key="item.key"
+              type="button"
+              class="apple-filter-button"
+              :class="[
+                isControlActive(item) ? '!bg-accent !text-white hover:!bg-[#0077ed]' : '',
+                item.type === 'effect' ? 'col-span-2 sm:col-span-3' : '',
+              ]"
+              :disabled="!isReady || isExportingGif"
+              @click="handleControlClick(item)"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="my-6 h-px bg-line/70" />
+
+        <div class="flex flex-col gap-4">
+          <div>
+            <p class="apple-kicker m-0 text-muted">
+              Export
+            </p>
+            <p class="apple-body-compact m-0 mt-2 text-ink">
+              导出选项
+            </p>
+          </div>
+
+          <div>
+            <p class="apple-kicker m-0 text-muted">
+              GIF 质量
+            </p>
+            <div class="mt-2 flex items-center justify-between gap-3 text-[12px] text-muted leading-[1.33] tracking-[-0.12px]">
+              <span class="text-ink font-600">{{ selectedGifQuality.label }}</span>
+              <span>{{ selectedGifQuality.width }}×{{ selectedGifQuality.height }} · {{ selectedGifQuality.maxColors }} 色</span>
+            </div>
+            <p class="m-0 mt-1 text-[12px] text-muted leading-[1.33] tracking-[-0.12px]">
+              {{ selectedGifQuality.description }}
+            </p>
+            <input
+              v-model.number="selectedGifQualityIndex"
+              type="range"
+              min="0"
+              :max="gifExportQualityOptions.length - 1"
+              step="1"
+              class="bg-surfacesoft mt-3 h-2 w-full cursor-pointer appearance-none rounded-full accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="isExportingGif"
+            >
+            <div class="grid mt-2 gap-2 text-[11px] text-muted leading-[1.33] tracking-[-0.12px]" :style="{ gridTemplateColumns: `repeat(${gifExportQualityOptions.length}, minmax(0, 1fr))` }">
+              <button
+                v-for="(quality, index) in gifExportQualityOptions"
+                :key="quality.key"
+                type="button"
+                class="rounded-[10px] px-1 py-1 text-center"
+                :class="selectedGifQualityKey === quality.key ? 'text-accent font-600' : ''"
+                :disabled="isExportingGif"
+                @click="selectedGifQualityIndex = index"
+              >
+                {{ quality.label }}
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            :class="exportButtonClass"
+            :disabled="!isReady || isExportingGif || !selectedControl"
+            @click="exportSelectedGif()"
+          >
+            {{ exportButtonLabel }}
+          </button>
+        </div>
+
+        <p v-if="exportErrorMessage" class="m-0 mt-4 text-[12px] text-[#d70015] leading-[1.33] tracking-[-0.12px]">
+          {{ exportErrorMessage }}
+        </p>
+      </div>
+    </section>
+  </div>
+</template>
