@@ -1,26 +1,26 @@
 # GBF Character Animation
 
-基于 Vue 3 + Vite 的 GBF 角色动作预览与 GIF 导出工具。
+基于 Vue 3 + Vite 的 GBF 角色、皮肤与敌人动作预览和 GIF 导出工具。
 
 ## 运行时资源
 
-角色脚本与图片通过 Cloudflare Worker 代理按需加载。
+角色脚本与图片在生产环境通过 Cloudflare Worker 代理按需加载；本地开发时由 Vite dev server 的 Node 中间件直接代理上游资源。
 
 - 运行时索引使用 `public/data.json`。
 - CreateJS 运行时位于 `public/js/runtime/createjs.js`。
-- 前端可通过 `VITE_GBF_PROXY_BASE` 指向独立 Worker 域名；如果 Worker 已绑定到和页面同源的路由，也可以不配这个变量。
+- 前端可通过 `VITE_GBF_PROXY_BASE` 指向独立 Worker 域名；本地开发时会强制走当前 Vite 源站的同源 Node 代理，不依赖这个变量。
 
-## 角色加载规则
+## 资源加载规则
 
-- 页面输入的是基础角色 ID，例如 `3040638000`。
-- 角色候选资源名和图片 ID 通过 `public/data.json` 推导。
-- 实际加载时会按 `public/data.json` 中的图片 ID 归并出脚本组，再通过 Worker `/version`、`/js/cjs/*`、`/img/cjs/*` 接口拉取远程资源，并从 `js/runtime` 加载 CreateJS 运行时。
+- 页面输入的是角色、皮肤或敌人的基础 ID，例如 `3040638000`、`3710191000`、`1200011`。
+- 候选资源名和图片 ID 通过 `public/data.json` 推导。
+- 实际加载时会按 `public/data.json` 中的图片 ID 归并出脚本组，再通过 `/version`、`/js/cjs/*`、`/img/cjs/*` 接口拉取远程资源，并从 `js/runtime` 加载 CreateJS 运行时。本地开发下这些接口由 Vite 的 Node 进程处理，生产环境再由 Worker 提供。
 - 本体动作先进入就绪状态，特效资源异步补齐；特效缺失时不会阻塞角色本体动作。
 
 ## 资源索引脚本
 
 - `script/fetchResource.ts` 会从 `https://raw.githubusercontent.com/MizaGBF/GBFAL/refs/heads/main/json/data.json` 拉取远端索引。
-- 脚本只保留动画相关的 `characters` 和 `skins`，并裁剪为 `npc` / `special` 两类资源后写入 `public/data.json`。
+- 脚本会保留动画相关的 `characters`、`skins` 和 `enemies`，并统一裁剪为 `npc` / `special` 两类资源后写入 `public/data.json`。
 - 脚本会额外请求 `https://game.granbluefantasy.jp/` 提取当前资源版本号，方便在更新索引时确认上游版本仍可解析。
 - 该脚本负责生成 `public/data.json`，不会下载本地角色脚本与图片。
 - 执行命令：`pnpm fetch:resource`
@@ -37,7 +37,7 @@
 VITE_GBF_PROXY_BASE=http://127.0.0.1:8787
 ```
 
-- 本地开发时，通常把它指向 `wrangler dev` 启动的 Worker 地址。
+- 本地开发时不需要再启动 `wrangler dev`；Vite 会在当前源站下直接代理这些接口。
 - 如果线上把 Worker 绑到了和页面同源的路由，这个变量可以留空。
 
 ## GitHub Pages

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "fetch:resource": "node script/fetchResource.ts",
+    "fetch:resource": "tsx script/fetchResource.ts",
     "up": "taze major -I"
   },
   "dependencies": {
@@ -24,6 +24,7 @@
     "@vue/tsconfig": "^0.9.1",
     "eslint": "^10.2.1",
     "eslint-plugin-format": "^2.0.1",
+    "tsx": "^4.20.6",
     "typescript": "~6.0.3",
     "unocss": "^66.6.8",
     "unplugin-auto-import": "^21.0.0",

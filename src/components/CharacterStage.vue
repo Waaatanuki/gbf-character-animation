@@ -34,6 +34,7 @@ interface ResolvedAssetGroup {
 interface CharacterManifestPayload {
   characters?: Record<string, CharacterManifestEntry>
   skins?: Record<string, CharacterManifestEntry>
+  enemies?: Record<string, CharacterManifestEntry>
 }
 
 interface ResolvedCharacterAssets {
@@ -160,6 +161,7 @@ const currentMotion = ref<MotionKey>('wait')
 const queuedMotions = ref<MotionKey[]>([])
 const selectedControlKey = ref<string>('wait')
 const selectedGifQualityKey = ref<GifExportQualityOption['key']>('balanced')
+const selectedGifMirror = ref(false)
 const isExportingGif = ref(false)
 
 const stage = shallowRef<any>(null)
@@ -384,6 +386,9 @@ function shouldHideCharacterForSpecial(scriptId: string) {
 }
 
 function getWorkerProxyBase() {
+  if (import.meta.env.DEV)
+    return window.location.origin
+
   return configuredProxyBase || window.location.origin
 }
 
@@ -443,12 +448,13 @@ async function getCharacterManifest() {
     characterManifestPromise = fetch(characterDataUrl)
       .then(async (response) => {
         if (!response.ok)
-          throw new Error('角色资源索引加载失败')
+          throw new Error('资源索引加载失败')
 
         const data = await response.json() as CharacterManifestPayload
         return {
           ...(data.characters ?? {}),
           ...(data.skins ?? {}),
+          ...(data.enemies ?? {}),
         }
       })
       .catch((error) => {
@@ -525,13 +531,13 @@ async function resolveCharacterAssets(characterId: string): Promise<ResolvedChar
   ])
   const entry = manifest[characterId]
   if (!entry)
-    throw new Error(`未找到角色 ${characterId} 的资源索引`)
+    throw new Error(`未找到 ID ${characterId} 的资源索引`)
 
   const npcImages = entry.npc ?? []
   const specialImages = entry.special ?? []
   const npcGroup = await resolveAvailableAssetGroup(npcImages, assetVersion)
   if (!npcGroup)
-    throw new Error(`未找到角色 ${characterId} 的远程本体动作资源，请检查 Worker 代理与版本号接口`)
+    throw new Error(`未找到 ID ${characterId} 的远程本体动作资源，请检查 Worker 代理与版本号接口`)
 
   const specialGroup = await resolveAvailableAssetGroup(specialImages, assetVersion, extractAssetVariant(npcGroup.scriptId))
   const effects = specialGroup ? [createSpecialEffect(specialGroup, assetVersion)] : []
@@ -850,9 +856,21 @@ function captureGifFrame(
   context: CanvasRenderingContext2D,
   sourceCanvas: HTMLCanvasElement,
   quality: GifExportQualityOption,
+  mirrored: boolean,
 ) {
   context.clearRect(0, 0, quality.width, quality.height)
-  context.drawImage(sourceCanvas, 0, 0, quality.width, quality.height)
+
+  if (mirrored) {
+    context.save()
+    context.translate(quality.width, 0)
+    context.scale(-1, 1)
+    context.drawImage(sourceCanvas, 0, 0, quality.width, quality.height)
+    context.restore()
+  }
+  else {
+    context.drawImage(sourceCanvas, 0, 0, quality.width, quality.height)
+  }
+
   return new Uint8ClampedArray(context.getImageData(0, 0, quality.width, quality.height).data)
 }
 
@@ -960,7 +978,7 @@ function sanitizeGifName(name: string) {
     .trim()
 }
 
-async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElement, quality: GifExportQualityOption) {
+async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElement, quality: GifExportQualityOption, mirrored: boolean) {
   const exportCanvas = document.createElement('canvas')
   exportCanvas.width = quality.width
   exportCanvas.height = quality.height
@@ -989,7 +1007,7 @@ async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElemen
     function finish() {
       createjs.Ticker.removeEventListener('tick', onTick)
       if (!frames.length)
-        frames.push(captureGifFrame(context, sourceCanvas, quality))
+        frames.push(captureGifFrame(context, sourceCanvas, quality, mirrored))
       resolve(frames)
     }
 
@@ -1001,7 +1019,7 @@ async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElemen
     function onTick() {
       tickCount += 1
       if (frames.length === 0 || tickCount % quality.tickStep === 0)
-        frames.push(captureGifFrame(context, sourceCanvas, quality))
+        frames.push(captureGifFrame(context, sourceCanvas, quality, mirrored))
 
       if (item.type === 'effect') {
         if (activeEffect.value === item.key)
@@ -1084,7 +1102,7 @@ async function loadCharacter(characterId: string) {
 
   try {
     if (!nextCharacterId)
-      throw new Error('请输入角色 ID')
+      throw new Error('请输入角色、皮肤或敌人 ID')
 
     await ensureRuntimeReady()
     const assets = await resolveCharacterAssets(nextCharacterId)
@@ -1165,7 +1183,7 @@ async function exportSelectedGif() {
   try {
     const quality = selectedGifQuality.value
     const gifExportDelay = Math.round(1000 / (30 / quality.tickStep))
-    const frames = await recordGifFrames(item, sourceCanvas, quality)
+    const frames = await recordGifFrames(item, sourceCanvas, quality, selectedGifMirror.value)
     const trimmedFrameSet = trimGifFrames(frames, quality.width, quality.height)
     const rgba = new Uint8Array(trimmedFrameSet.frames.length * trimmedFrameSet.frames[0].length)
     let offset = 0
@@ -1198,7 +1216,8 @@ async function exportSelectedGif() {
 
     const gifPrefix = normalizedCharacterId.value || currentNpcScriptId.value || 'character'
     const gifActionName = item.label || item.key
-    downloadGif(gif.bytes(), `${sanitizeGifName(gifPrefix)}_${sanitizeGifName(gifActionName)}.gif`)
+    const gifSuffix = selectedGifMirror.value ? '_mirror' : ''
+    downloadGif(gif.bytes(), `${sanitizeGifName(gifPrefix)}_${sanitizeGifName(gifActionName)}${gifSuffix}.gif`)
   }
   catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -1322,6 +1341,16 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
+
+          <label class="flex items-center justify-between gap-4 rounded-[16px] bg-surfacesoft px-4 py-3 text-[13px] text-ink leading-[1.4] tracking-[-0.18px]">
+            <span class="font-600">镜像导出</span>
+            <input
+              v-model="selectedGifMirror"
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="isExportingGif"
+            >
+          </label>
 
           <button
             type="button"

@@ -16,6 +16,22 @@ interface CharacterAnimationEntry {
 interface ResourcePayload {
   characters: Record<string, CharacterAnimationEntry>
   skins: Record<string, CharacterAnimationEntry>
+  enemies: Record<string, CharacterAnimationEntry>
+}
+
+interface AnimationEntryIndexes {
+  npc: number
+  special: number
+}
+
+const characterEntryIndexes: AnimationEntryIndexes = {
+  npc: 0,
+  special: 2,
+}
+
+const enemyEntryIndexes: AnimationEntryIndexes = {
+  npc: 1,
+  special: 4,
 }
 
 class HttpError extends Error {
@@ -90,9 +106,10 @@ async function fetchGameVersion() {
 }
 
 function normalizePayload(source: unknown): ResourcePayload {
-  const characters = pickAnimationEntries((source as Record<string, unknown>)?.characters)
-  const skins = pickAnimationEntries((source as Record<string, unknown>)?.skins)
-  return { characters, skins }
+  const characters = pickAnimationEntries((source as Record<string, unknown>)?.characters, characterEntryIndexes)
+  const skins = pickAnimationEntries((source as Record<string, unknown>)?.skins, characterEntryIndexes)
+  const enemies = pickAnimationEntries((source as Record<string, unknown>)?.enemies, enemyEntryIndexes)
+  return { characters, skins, enemies }
 }
 
 function normalizeAssetList(value: unknown) {
@@ -104,7 +121,7 @@ function normalizeAssetList(value: unknown) {
     .map(item => item.replace(/\.png$/i, ''))
 }
 
-function pickAnimationEntries(entries: unknown) {
+function pickAnimationEntries(entries: unknown, indexes: AnimationEntryIndexes) {
   if (!entries || typeof entries !== 'object')
     return {}
 
@@ -114,8 +131,8 @@ function pickAnimationEntries(entries: unknown) {
     if (!Array.isArray(value))
       continue
 
-    const npc = normalizeAssetList(value[0])
-    const special = normalizeAssetList(value[2])
+    const npc = normalizeAssetList(value[indexes.npc])
+    const special = normalizeAssetList(value[indexes.special])
     if (!npc.length && !special.length)
       continue
 
@@ -142,7 +159,8 @@ async function main() {
   console.log(`version: ${version}`)
   console.log(`characters: ${Object.keys(payload.characters).length}`)
   console.log(`skins: ${Object.keys(payload.skins).length}`)
-  console.log('本地角色脚本与图片目录已移除，运行时资源请通过 Worker 代理加载')
+  console.log(`enemies: ${Object.keys(payload.enemies).length}`)
+  console.log('本地角色与敌人脚本、图片目录已移除，运行时资源请通过 Worker 代理加载')
 }
 
 main().catch((error) => {

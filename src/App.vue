@@ -42,25 +42,25 @@ function applyCharacterId() {
             Overview
           </p>
           <h1 class="m-0 mt-4 apple-display-section text-ink">
-            预览角色动作与导出 GIF。
+            预览角色与敌人动作并导出 GIF。
           </h1>
           <div class="mt-8 flex flex-col gap-4 apple-card-wide sm:flex-row sm:items-center sm:justify-between">
             <p class="apple-body-compact text-ink">
-              输入角色或皮肤 ID 后加载角色资源。
+              输入角色、皮肤或敌人 ID 后加载资源。
             </p>
 
             <form class="flex flex-col gap-3 sm:max-w-[420px] sm:w-full sm:flex-row sm:items-center" @submit.prevent="applyCharacterId">
-              <label class="sr-only" for="character-id-input">角色 ID</label>
+              <label class="sr-only" for="character-id-input">资源 ID</label>
               <input
                 id="character-id-input"
                 v-model="characterIdInput"
                 type="text"
                 inputmode="numeric"
-                placeholder="例如 3040638000"
+                placeholder="例如 3040638000 或 1200011"
                 class="apple-input"
               >
               <button type="submit" class="apple-cta shrink-0">
-                加载角色
+                加载资源
               </button>
             </form>
           </div>
