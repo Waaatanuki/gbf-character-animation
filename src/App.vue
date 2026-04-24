@@ -1,14 +1,22 @@
-<script setup lang="ts">
-import CharacterStage from './components/CharacterStage.vue'
-import ThemeModeToggle from './components/ThemeModeToggle.vue'
-</script>
-
 <template>
   <div class="bg-page text-ink min-h-svh">
     <header class="apple-nav-shell">
       <nav class="mx-auto h-12 max-w-[980px] flex items-center justify-between px-5 text-[12px] leading-[1.33] tracking-[-0.12px]">
         <a href="#overview" class="font-500 no-underline">GBF Character Animation</a>
-        <ThemeModeToggle />
+        <div class="flex items-center gap-3">
+          <a
+            href="https://github.com/Waaatanuki/gbf-character-animation"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="查看 GitHub 仓库"
+            title="查看 GitHub 仓库"
+            class="apple-nav-icon"
+          >
+            <span class="i-simple-icons-github h-4 w-4" aria-hidden="true" />
+            <span class="sr-only">GitHub 仓库</span>
+          </a>
+          <ThemeModeToggle />
+        </div>
       </nav>
     </header>
 

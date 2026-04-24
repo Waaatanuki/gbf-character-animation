@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-
 type ThemeMode = 'light' | 'dark' | 'system'
 
 const themeStorageKey = 'gbf-character-animation-theme'
@@ -83,17 +81,7 @@ watch(resolvedTheme, value => applyTheme(value), { immediate: true })
       :class="theme === 'light' ? 'theme-toggle-option-active' : ''"
       @click="setTheme('light')"
     >
-      <svg aria-hidden="true" viewBox="0 0 24 24" class="theme-icon-stroke">
-        <circle cx="12" cy="12" r="4" />
-        <path d="M12 2v2.5" />
-        <path d="M12 19.5V22" />
-        <path d="M4.93 4.93l1.77 1.77" />
-        <path d="M17.3 17.3l1.77 1.77" />
-        <path d="M2 12h2.5" />
-        <path d="M19.5 12H22" />
-        <path d="M4.93 19.07l1.77-1.77" />
-        <path d="M17.3 6.7l1.77-1.77" />
-      </svg>
+      <span aria-hidden="true" class="i-lucide-sun-medium h-3.5 w-3.5" />
       <span class="sr-only">浅色模式</span>
     </button>
     <button
@@ -106,9 +94,7 @@ watch(resolvedTheme, value => applyTheme(value), { immediate: true })
       :class="theme === 'dark' ? 'theme-toggle-option-active' : ''"
       @click="setTheme('dark')"
     >
-      <svg aria-hidden="true" viewBox="0 0 24 24" class="theme-icon-fill">
-        <path d="M14.5 2.8a8.7 8.7 0 1 0 6.7 11.9 9.4 9.4 0 0 1-11.9-11.9 8.6 8.6 0 0 0 5.2 0Z" />
-      </svg>
+      <span aria-hidden="true" class="i-lucide-moon-star h-3.5 w-3.5" />
       <span class="sr-only">深色模式</span>
     </button>
     <button
@@ -121,10 +107,7 @@ watch(resolvedTheme, value => applyTheme(value), { immediate: true })
       :class="theme === 'system' ? 'theme-toggle-option-active' : ''"
       @click="setTheme('system')"
     >
-      <svg aria-hidden="true" viewBox="0 0 24 24" class="theme-icon-stroke">
-        <rect x="5" y="6" width="14" height="10" rx="1.5" />
-        <path d="M3 18h18" />
-      </svg>
+      <span aria-hidden="true" class="i-lucide-monitor h-3.5 w-3.5" />
       <span class="sr-only">跟随系统</span>
     </button>
   </div>

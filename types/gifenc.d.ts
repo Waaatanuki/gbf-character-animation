@@ -24,9 +24,9 @@ declare module 'gifenc' {
   }
 
   export interface GifEncoderInstance {
-    finish(): void
-    bytes(): Uint8Array
-    writeFrame(index: Uint8Array, width: number, height: number, options?: GifFrameOptions): void
+    finish: () => void
+    bytes: () => Uint8Array
+    writeFrame: (index: Uint8Array, width: number, height: number, options?: GifFrameOptions) => void
   }
 
   export function GIFEncoder(options?: GifEncoderOptions): GifEncoderInstance

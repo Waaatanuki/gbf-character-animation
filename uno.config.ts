@@ -5,6 +5,7 @@ export default defineConfig({
     ['fc', 'flex items-center justify-center'],
     ['apple-nav', 'bg-[rgba(0,0,0,0.8)] text-white backdrop-blur-[20px] backdrop-saturate-[180%]'],
     ['apple-nav-shell', 'sticky top-0 z-50 border-b border-white/10 apple-nav'],
+    ['apple-nav-icon', 'fc h-7 w-7 rounded-full text-white/76 no-underline transition-colors duration-200 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus'],
     ['apple-link', 'inline-flex items-center gap-1 rounded-full text-[14px] leading-[1.43] tracking-[-0.224px] text-accentstrong no-underline transition-colors duration-200 hover:text-accent hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus'],
     ['apple-link-dark', 'inline-flex items-center gap-1 rounded-full text-[14px] leading-[1.43] tracking-[-0.224px] text-accentdark no-underline transition-colors duration-200 hover:text-white hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus'],
     ['apple-cta', 'inline-flex items-center justify-center rounded-full border border-transparent bg-accent px-5 py-[10px] text-[17px] leading-[1] tracking-normal text-white no-underline transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50'],
