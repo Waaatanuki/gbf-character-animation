@@ -57,6 +57,19 @@ interface GifExportQualityOption {
   maxColors: number
 }
 
+interface GifFrameSet {
+  frames: Uint8ClampedArray[]
+  width: number
+  height: number
+}
+
+interface PixelBounds {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
 type MotionKey = 'wait' | 'stbwait' | 'attack' | 'double' | 'triple' | 'ability' | 'mortal_A' | 'damage' | 'win' | 'down'
 
 interface CharacterManifestEntry {
@@ -847,6 +860,96 @@ function findTransparentIndex(palette: number[][]) {
   return palette.findIndex(color => color[3] === 0)
 }
 
+function findOpaqueBounds(frame: Uint8ClampedArray, width: number, height: number) {
+  let left = width
+  let top = height
+  let right = -1
+  let bottom = -1
+
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width * 4
+    for (let x = 0; x < width; x += 1) {
+      if (frame[rowOffset + (x * 4) + 3] === 0)
+        continue
+
+      if (x < left)
+        left = x
+      if (y < top)
+        top = y
+      if (x > right)
+        right = x
+      if (y > bottom)
+        bottom = y
+    }
+  }
+
+  if (right < 0 || bottom < 0)
+    return null
+
+  return { left, top, right, bottom }
+}
+
+function trimGifFrames(frames: Uint8ClampedArray[], width: number, height: number, padding = 1): GifFrameSet {
+  let bounds: PixelBounds | null = null
+
+  for (const frame of frames) {
+    const currentBounds = findOpaqueBounds(frame, width, height)
+    if (!currentBounds)
+      continue
+
+    if (!bounds) {
+      bounds = currentBounds
+      continue
+    }
+
+    bounds.left = Math.min(bounds.left, currentBounds.left)
+    bounds.top = Math.min(bounds.top, currentBounds.top)
+    bounds.right = Math.max(bounds.right, currentBounds.right)
+    bounds.bottom = Math.max(bounds.bottom, currentBounds.bottom)
+  }
+
+  if (!bounds) {
+    return {
+      frames,
+      width,
+      height,
+    }
+  }
+
+  const left = Math.max(0, bounds.left - padding)
+  const top = Math.max(0, bounds.top - padding)
+  const right = Math.min(width - 1, bounds.right + padding)
+  const bottom = Math.min(height - 1, bounds.bottom + padding)
+  const trimmedWidth = Math.max(1, right - left + 1)
+  const trimmedHeight = Math.max(1, bottom - top + 1)
+
+  if (trimmedWidth === width && trimmedHeight === height && left === 0 && top === 0) {
+    return {
+      frames,
+      width,
+      height,
+    }
+  }
+
+  const trimmedFrames = frames.map((frame) => {
+    const nextFrame = new Uint8ClampedArray(trimmedWidth * trimmedHeight * 4)
+
+    for (let y = 0; y < trimmedHeight; y += 1) {
+      const sourceStart = ((top + y) * width + left) * 4
+      const sourceEnd = sourceStart + (trimmedWidth * 4)
+      nextFrame.set(frame.subarray(sourceStart, sourceEnd), y * trimmedWidth * 4)
+    }
+
+    return nextFrame
+  })
+
+  return {
+    frames: trimmedFrames,
+    width: trimmedWidth,
+    height: trimmedHeight,
+  }
+}
+
 function sanitizeGifName(name: string) {
   return name
     .replace(/[<>:"/\\|?*]+/g, '_')
@@ -1063,9 +1166,10 @@ async function exportSelectedGif() {
     const quality = selectedGifQuality.value
     const gifExportDelay = Math.round(1000 / (30 / quality.tickStep))
     const frames = await recordGifFrames(item, sourceCanvas, quality)
-    const rgba = new Uint8Array(frames.length * frames[0].length)
+    const trimmedFrameSet = trimGifFrames(frames, quality.width, quality.height)
+    const rgba = new Uint8Array(trimmedFrameSet.frames.length * trimmedFrameSet.frames[0].length)
     let offset = 0
-    for (const frame of frames) {
+    for (const frame of trimmedFrameSet.frames) {
       rgba.set(frame, offset)
       offset += frame.length
     }
@@ -1078,9 +1182,9 @@ async function exportSelectedGif() {
     const transparentIndex = findTransparentIndex(palette)
 
     const gif = GIFEncoder()
-    frames.forEach((frame, index) => {
+    trimmedFrameSet.frames.forEach((frame, index) => {
       const bitmap = applyPalette(frame, palette, 'rgba4444')
-      gif.writeFrame(bitmap, quality.width, quality.height, {
+      gif.writeFrame(bitmap, trimmedFrameSet.width, trimmedFrameSet.height, {
         palette: index === 0 ? palette : undefined,
         delay: gifExportDelay,
         repeat: 0,

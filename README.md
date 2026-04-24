@@ -4,11 +4,10 @@
 
 ## 运行时资源
 
-项目现在不再把角色脚本和图片落到 `public/js/cjs`、`public/img/cjs`。
+角色脚本与图片通过 Cloudflare Worker 代理按需加载。
 
-- 运行时索引仍然使用 `public/data.json`。
-- CreateJS 运行时仍保留在 `public/js/runtime/createjs.js`。
-- 角色脚本与图片统一通过 Cloudflare Worker 代理按需加载。
+- 运行时索引使用 `public/data.json`。
+- CreateJS 运行时位于 `public/js/runtime/createjs.js`。
 - 前端可通过 `VITE_GBF_PROXY_BASE` 指向独立 Worker 域名；如果 Worker 已绑定到和页面同源的路由，也可以不配这个变量。
 
 ## 角色加载规则
@@ -23,12 +22,12 @@
 - `script/fetchResource.ts` 会从 `https://raw.githubusercontent.com/MizaGBF/GBFAL/refs/heads/main/json/data.json` 拉取远端索引。
 - 脚本只保留动画相关的 `characters` 和 `skins`，并裁剪为 `npc` / `special` 两类资源后写入 `public/data.json`。
 - 脚本会额外请求 `https://game.granbluefantasy.jp/` 提取当前资源版本号，方便在更新索引时确认上游版本仍可解析。
-- 该脚本现在只负责生成 `public/data.json`，不再下载本地角色脚本与图片。
+- 该脚本负责生成 `public/data.json`，不会下载本地角色脚本与图片。
 - 执行命令：`pnpm fetch:resource`
 
 ## Cloudflare Worker 代理
 
-- 仓库内附带了一套可独立部署的 Cloudflare Worker 代理，目录在 [worker/README.md](/Users/watanuki/Dev/Github/gbf-character-animation/worker/README.md)。
+- 仓库内附带了一套可独立部署的 Cloudflare Worker 代理，目录在 [worker/README.md](worker/README.md)。
 - 它提供 `version`、`js/cjs`、`img/cjs` 三类只读代理接口，用来解决浏览器直接请求 GBF 资源时的跨域问题。
 - 部署与调试命令都在该目录自己的 `package.json` 中，不会污染当前 Vite 应用依赖。
 
@@ -43,7 +42,7 @@ VITE_GBF_PROXY_BASE=http://127.0.0.1:8787
 
 ## GitHub Pages
 
-- 仓库内置了 [deploy-pages.yml](/Users/watanuki/Dev/Github/gbf-character-animation/.github/workflows/deploy-pages.yml)，每次 push 到 `main` 都会自动构建并发布到 GitHub Pages。
+- 仓库内置了 [deploy-pages.yml](.github/workflows/deploy-pages.yml)，每次 push 到 `main` 都会自动构建并发布到 GitHub Pages。
 - Workflow 会在 CI 中注入：
   - `VITE_APP_BASE=/gbf-character-animation/`
   - `VITE_GBF_PROXY_BASE=https://gbf-character-animation-proxy.watanukipublic.workers.dev`
