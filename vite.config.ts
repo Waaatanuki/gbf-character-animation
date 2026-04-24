@@ -7,8 +7,10 @@ import { defineConfig, loadEnv } from 'vite'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const workerProxyTarget = env.VITE_GBF_PROXY_BASE || 'http://127.0.0.1:8787'
+  const base = env.VITE_APP_BASE || '/'
 
   return {
+    base,
     plugins: [
       vue(),
       AutoImport({

@@ -73,14 +73,15 @@ const characterDataUrl = `${import.meta.env.BASE_URL}data.json`
 const configuredProxyBase = ((import.meta.env.VITE_GBF_PROXY_BASE as string | undefined)?.trim().replace(/\/$/, '')) ?? ''
 const stageWidth = 640
 const stageHeight = 640
+const renderPixelRatio = 1
 const remoteRequestTimeoutMs = 8000
 const assetLoadTimeoutMs = 15000
 const exportButtonClass = 'apple-cta w-full shrink-0 sm:w-auto'
-const characterScale = 0.5
-const characterAnchor = { x: 0.25, y: 0.4 }
+const characterScale = 0.8
+const characterAnchor = { x: 0.5, y: 0.8 }
 const attackComboSequence: MotionKey[] = ['attack', 'double', 'triple']
 const effectAnchor = { x: 0, y: 0 }
-const effectScale = 0.5
+const effectScale = 1
 const gifExportBaseQualityOptions: GifExportQualityOption[] = [
   {
     key: 'compact',
@@ -511,6 +512,15 @@ async function ensureRuntimeReady() {
   setupGlobals()
   runtimeReadyPromise ??= loadScript(`${localRuntimeBase}/createjs.js`)
   await runtimeReadyPromise
+
+  const w = window as typeof window & {
+    createjs?: {
+      Config?: {
+        setPixelRatio?: (value: number) => void
+      }
+    }
+  }
+  w.createjs?.Config?.setPixelRatio?.(renderPixelRatio)
 }
 
 const scriptCache = new Map<string, Promise<void>>()
@@ -562,7 +572,9 @@ function buildStage() {
   if (!npcScriptId)
     throw new Error('未解析到角色本体资源')
 
-  const dpr = window.devicePixelRatio || 1
+  const dpr = renderPixelRatio
+  console.log({ dpr })
+
   // 强制走 2d 渲染器，避免 GBF createjs 的 WebGL 分支在普通页面里无法正确初始化
   canvas.setAttribute('cjs-context', '2d')
   canvas.setAttribute('cjs-noclip', '')
@@ -1091,7 +1103,7 @@ onBeforeUnmount(() => {
   <div class="mx-auto max-w-[980px] w-full px-5 sm:px-8">
     <section class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
       <div class="apple-stage-shell">
-        <div class="relative mx-auto max-w-[360px] w-full" :style="{ aspectRatio: `${stageWidth} / ${stageHeight}` }">
+        <div class="relative mx-auto max-w-[600px] w-full" :style="{ aspectRatio: `${stageWidth} / ${stageHeight}` }">
           <canvas
             ref="canvasRef"
             class="relative z-[1] block h-full w-full drop-shadow-[0_18px_48px_rgba(0,0,0,0.48)]"

@@ -41,6 +41,14 @@ VITE_GBF_PROXY_BASE=http://127.0.0.1:8787
 - 本地开发时，通常把它指向 `wrangler dev` 启动的 Worker 地址。
 - 如果线上把 Worker 绑到了和页面同源的路由，这个变量可以留空。
 
+## GitHub Pages
+
+- 仓库内置了 [deploy-pages.yml](/Users/watanuki/Dev/Github/gbf-character-animation/.github/workflows/deploy-pages.yml)，每次 push 到 `main` 都会自动构建并发布到 GitHub Pages。
+- Workflow 会在 CI 中注入：
+  - `VITE_APP_BASE=/gbf-character-animation/`
+  - `VITE_GBF_PROXY_BASE=https://gbf-character-animation-proxy.watanukipublic.workers.dev`
+- 第一次启用前，去 GitHub 仓库设置里把 Pages Source 切到 `GitHub Actions`。
+
 ## 开发命令
 
 ```bash

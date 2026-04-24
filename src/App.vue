@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const defaultCharacterId = '3040638000'
+const defaultCharacterId = '3710191000'
 const characterIdInput = ref(defaultCharacterId)
 const activeCharacterId = ref(defaultCharacterId)
 const characterStageKey = ref(0)
@@ -46,7 +46,7 @@ function applyCharacterId() {
           </h1>
           <div class="mt-8 flex flex-col gap-4 apple-card-wide sm:flex-row sm:items-center sm:justify-between">
             <p class="apple-body-compact text-ink">
-              输入角色 ID 后加载本地角色资源。
+              输入角色或皮肤 ID 后加载角色资源。
             </p>
 
             <form class="flex flex-col gap-3 sm:max-w-[420px] sm:w-full sm:flex-row sm:items-center" @submit.prevent="applyCharacterId">
