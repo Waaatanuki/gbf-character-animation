@@ -165,6 +165,22 @@ const activeEffectTickHandler = shallowRef<(() => void) | null>(null)
 const activeEffectCycleCount = ref(0)
 const normalizedCharacterId = computed(() => props.characterId.trim())
 
+function getAspectFitSize(sourceWidth: number, sourceHeight: number, maxWidth: number, maxHeight: number) {
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    return {
+      width: Math.max(1, Math.round(maxWidth)),
+      height: Math.max(1, Math.round(maxHeight)),
+    }
+  }
+
+  const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight)
+
+  return {
+    width: Math.max(1, Math.round(sourceWidth * scale)),
+    height: Math.max(1, Math.round(sourceHeight * scale)),
+  }
+}
+
 const isReady = computed(() => status.value === 'ready')
 const controlItems = computed<ControlItem[]>(() => [
   ...motions.map(motion => ({
@@ -181,24 +197,31 @@ const controlItems = computed<ControlItem[]>(() => [
 const gifSourceWidth = computed(() => Math.max(stageWidth, canvasRef.value?.width ?? stageWidth))
 const gifSourceHeight = computed(() => Math.max(stageHeight, canvasRef.value?.height ?? stageHeight))
 const gifExportQualityOptions = computed<GifExportQualityOption[]>(() => {
-  return gifExportBaseQualityOptions.map((option) => {
-    if (option.key === 'high') {
-      return {
-        ...option,
-        width: Math.max(option.width, Math.round(gifSourceWidth.value * 0.75)),
-        height: Math.max(option.height, Math.round(gifSourceHeight.value * 0.75)),
-      }
-    }
+  const sourceWidth = gifSourceWidth.value
+  const sourceHeight = gifSourceHeight.value
 
+  return gifExportBaseQualityOptions.map((option) => {
     if (option.key === 'ultra') {
       return {
         ...option,
-        width: gifSourceWidth.value,
-        height: gifSourceHeight.value,
+        width: sourceWidth,
+        height: sourceHeight,
       }
     }
 
-    return option
+    const maxWidth = option.key === 'high'
+      ? Math.max(option.width, Math.round(sourceWidth * 0.75))
+      : option.width
+    const maxHeight = option.key === 'high'
+      ? Math.max(option.height, Math.round(sourceHeight * 0.75))
+      : option.height
+    const { width, height } = getAspectFitSize(sourceWidth, sourceHeight, maxWidth, maxHeight)
+
+    return {
+      ...option,
+      width,
+      height,
+    }
   })
 })
 const selectedControl = computed(() =>
@@ -1168,9 +1191,6 @@ onBeforeUnmount(() => {
           </p>
 
           <div>
-            <p class="m-0 apple-kicker text-muted">
-              GIF 质量
-            </p>
             <div class="mt-2 flex items-center justify-between gap-3 text-[12px] text-muted leading-[1.33] tracking-[-0.12px]">
               <span class="text-ink font-600">{{ selectedGifQuality.label }}</span>
               <span>{{ selectedGifQuality.width }}×{{ selectedGifQuality.height }} · {{ selectedGifQuality.maxColors }} 色</span>
@@ -1184,12 +1204,12 @@ onBeforeUnmount(() => {
               class="mt-3 h-2 w-full cursor-pointer appearance-none rounded-full bg-surfacesoft accent-accent disabled:cursor-not-allowed disabled:opacity-50"
               :disabled="isExportingGif"
             >
-            <div class="grid mt-2 gap-2 text-[11px] text-muted leading-[1.33] tracking-[-0.12px]" :style="{ gridTemplateColumns: `repeat(${gifExportQualityOptions.length}, minmax(0, 1fr))` }">
+            <div class="mt-2 flex justify-between gap-2 text-[11px] text-muted leading-[1.33] tracking-[-0.12px]">
               <button
                 v-for="(quality, index) in gifExportQualityOptions"
                 :key="quality.key"
                 type="button"
-                class="rounded-[10px] px-1 py-1 text-center"
+                class="rounded-[10px] py-1 text-center"
                 :class="selectedGifQualityKey === quality.key ? 'text-accent font-600' : ''"
                 :disabled="isExportingGif"
                 @click="selectedGifQualityIndex = index"
