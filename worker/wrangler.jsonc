@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gbf-character-animation-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-24",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "VERSION_TTL_SECONDS": "300",
+    "ASSET_TTL_SECONDS": "86400"
+  }
+}

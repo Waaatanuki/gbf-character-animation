@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "lint": "eslint .",
+    "fetch:resource": "node script/fetchResource.ts",
     "up": "taze major -I"
   },
   "dependencies": {

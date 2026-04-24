@@ -27,6 +27,7 @@ export default defineConfig({
     ['apple-card-wide', 'rounded-[24px] bg-surface px-6 py-7 shadow-card'],
     ['apple-panel', 'rounded-[28px] bg-surface px-5 py-6 shadow-card sm:px-6 sm:py-7'],
     ['apple-filter-button', 'apple-filter min-h-[48px] px-4 text-center'],
+    ['apple-input', 'h-12 w-full rounded-[16px] border border-line bg-surface px-4 text-[15px] text-ink leading-[1.2] tracking-[-0.18px] outline-none transition-colors placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/15'],
     ['apple-stage-shell', 'rounded-[28px] bg-page-dark px-4 py-6 sm:px-8 sm:py-8'],
     ['apple-dark-chip', 'inline-flex items-center rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[12px] leading-[1.33] tracking-[-0.12px]'],
     ['apple-dark-chip-status', 'apple-dark-chip gap-2'],

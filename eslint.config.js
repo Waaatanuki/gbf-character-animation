@@ -4,4 +4,7 @@ export default antfu({
   unocss: true,
   formatters: true,
   ignores: ['**/*.js'],
+  rules:{
+    'node/prefer-global/process': 'off',
+  }
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { applyPalette, GIFEncoder, quantize } from 'gifenc'
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 
 interface MotionItem {
   key: string
@@ -18,17 +18,38 @@ interface EffectItem {
   label: string
   motion?: string // 同时触发的角色动作；省略表示不动角色
   images: string[] // 需要预加载的 png id 列表
-  scriptId: string // 对应 public/cjs 下脚本文件名（无扩展）
+  scriptId: string // 对应 Worker 代理下的脚本文件名（无扩展）
+  assetVersion: string
   hideCharacter?: boolean // 播放期间隐藏底层角色（必杀过场自带角色绘制）
   scale?: number // 可选：覆盖默认 effectScale
   // 可选：覆盖默认锚点（0~1，相对 canvas 宽高的比例）
   anchor?: { x: number, y: number }
 }
 
+interface ResolvedAssetGroup {
+  scriptId: string
+  imageIds: string[]
+}
+
+interface CharacterManifestPayload {
+  characters?: Record<string, CharacterManifestEntry>
+  skins?: Record<string, CharacterManifestEntry>
+}
+
+interface ResolvedCharacterAssets {
+  assetVersion: string
+  npcScriptId: string
+  npcImageIds: string[]
+  effects: EffectItem[]
+}
+
+interface VersionPayload {
+  version?: string
+}
+
 interface GifExportQualityOption {
   key: 'compact' | 'standard' | 'balanced' | 'high' | 'ultra'
   label: string
-  description: string
   width: number
   height: number
   tickStep: number
@@ -38,21 +59,32 @@ interface GifExportQualityOption {
 
 type MotionKey = 'wait' | 'stbwait' | 'attack' | 'double' | 'triple' | 'ability' | 'mortal_A' | 'damage' | 'win' | 'down'
 
-const characterId = 'npc_3040638000_01'
-const cjsBase = `${import.meta.env.BASE_URL}cjs`
-const stageWidth = 360
-const stageHeight = 420
+interface CharacterManifestEntry {
+  npc: string[]
+  special: string[]
+}
+
+const props = defineProps<{
+  characterId: string
+}>()
+
+const localRuntimeBase = `${import.meta.env.BASE_URL}js/runtime`
+const characterDataUrl = `${import.meta.env.BASE_URL}data.json`
+const configuredProxyBase = ((import.meta.env.VITE_GBF_PROXY_BASE as string | undefined)?.trim().replace(/\/$/, '')) ?? ''
+const stageWidth = 640
+const stageHeight = 640
+const remoteRequestTimeoutMs = 8000
+const assetLoadTimeoutMs = 15000
 const exportButtonClass = 'apple-cta w-full shrink-0 sm:w-auto'
-const characterScale = 0.4
-const characterAnchor = { x: 0.4, y: 0.4 }
+const characterScale = 0.5
+const characterAnchor = { x: 0.25, y: 0.4 }
 const attackComboSequence: MotionKey[] = ['attack', 'double', 'triple']
-const effectAnchor = { x: 0.5, y: 0.5 }
+const effectAnchor = { x: 0, y: 0 }
 const effectScale = 0.5
 const gifExportBaseQualityOptions: GifExportQualityOption[] = [
   {
     key: 'compact',
     label: '紧凑',
-    description: '体积优先',
     width: 180,
     height: 210,
     tickStep: 3,
@@ -62,7 +94,6 @@ const gifExportBaseQualityOptions: GifExportQualityOption[] = [
   {
     key: 'standard',
     label: '标准',
-    description: '更清晰一些',
     width: 220,
     height: 257,
     tickStep: 2,
@@ -72,7 +103,6 @@ const gifExportBaseQualityOptions: GifExportQualityOption[] = [
   {
     key: 'balanced',
     label: '平衡',
-    description: '推荐默认',
     width: 240,
     height: 280,
     tickStep: 2,
@@ -82,7 +112,6 @@ const gifExportBaseQualityOptions: GifExportQualityOption[] = [
   {
     key: 'high',
     label: '高清',
-    description: '更高分辨率，高像素屏会更清晰',
     width: 300,
     height: 350,
     tickStep: 1,
@@ -92,9 +121,8 @@ const gifExportBaseQualityOptions: GifExportQualityOption[] = [
   {
     key: 'ultra',
     label: '极清',
-    description: '使用当前设备原始画布像素',
-    width: 360,
-    height: 420,
+    width: stageWidth,
+    height: stageHeight,
     tickStep: 1,
     maxTicks: 480,
     maxColors: 256,
@@ -110,21 +138,6 @@ const motions: MotionItem[] = [
   { key: 'win', label: '胜利' },
 ]
 
-const effects: EffectItem[] = [
-  {
-    key: 'nsp_3040638000_01_s2',
-    label: '奥义动画',
-    // NSP 是含角色的完整过场，不需要同时触发角色 mortal_A（两者会穿模）
-    images: ['nsp_3040638000_01_s2_a', 'nsp_3040638000_01_s2_b'],
-    scriptId: 'nsp_3040638000_01_s2',
-    hideCharacter: true,
-    // NSP 内部以 (0,0) 为原点绘制、内容中心约在 (300, 330)。
-    // 在 360x420 画布上用 0.6 缩放 + 左上对齐，内容中心会落在 (180,198)，接近画布中心。
-    scale: 0.3,
-    anchor: { x: 0, y: 0 },
-  },
-]
-
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const status = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMessage = ref('')
@@ -138,6 +151,8 @@ const isExportingGif = ref(false)
 const stage = shallowRef<any>(null)
 const motionRoot = shallowRef<any>(null)
 const characterClip = shallowRef<any>(null)
+const currentNpcScriptId = ref('')
+const resolvedEffects = ref<EffectItem[]>([])
 const motionSequenceReturn = ref<MotionKey | null>(null)
 const motionSequenceHandler = shallowRef<(() => void) | null>(null)
 const activeMotionClip = shallowRef<any>(null)
@@ -147,6 +162,7 @@ const activeEffectClip = shallowRef<any>(null)
 const activeEffectPlaybackClip = shallowRef<any>(null)
 const activeEffectTickHandler = shallowRef<(() => void) | null>(null)
 const activeEffectCycleCount = ref(0)
+const normalizedCharacterId = computed(() => props.characterId.trim())
 
 const isReady = computed(() => status.value === 'ready')
 const controlItems = computed<ControlItem[]>(() => [
@@ -155,7 +171,7 @@ const controlItems = computed<ControlItem[]>(() => [
     label: motion.label,
     type: 'motion' as const,
   })),
-  ...effects.map(effect => ({
+  ...resolvedEffects.value.map(effect => ({
     key: effect.key,
     label: effect.label,
     type: 'effect' as const,
@@ -210,6 +226,12 @@ const exportButtonLabel = computed(() => {
     : '导出 GIF'
 })
 
+const remoteScriptAvailabilityCache = new Map<string, Promise<boolean>>()
+let characterManifestPromise: Promise<Record<string, CharacterManifestEntry>> | null = null
+let remoteVersionPromise: Promise<string> | null = null
+let runtimeReadyPromise: Promise<void> | null = null
+let activeLoadToken = 0
+
 function setupGlobals() {
   const w = window as any
   w.Game = w.Game ?? {}
@@ -220,8 +242,38 @@ function setupGlobals() {
   w.images = w.images ?? {}
   w.ss = w.ss ?? {}
   // GBF 资源里偶尔出现 require([...], cb) 这种 RequireJS 调用，stub 掉避免报错
-  if (typeof w.require !== 'function')
-    w.require = (_deps: string[], _cb?: (...args: any[]) => void) => {}
+  if (typeof w.require !== 'function') {
+    const raidExtension = new Proxy({
+      mChangeMotion: (motion: string) => {
+        if (motion === 'mortal_A')
+          startMotion('mortal_A')
+      },
+    }, {
+      get(target, property) {
+        return property in target ? target[property as keyof typeof target] : () => {}
+      },
+    })
+
+    const soundModule = new Proxy({
+      play: () => {},
+    }, {
+      get(target, property) {
+        return property in target ? target[property as keyof typeof target] : () => {}
+      },
+    })
+
+    w.require = (deps: string[], cb?: (...args: any[]) => void) => {
+      const modules = deps.map((dep) => {
+        if (dep === 'lib/raid/extension')
+          return raidExtension
+        if (dep === 'lib/sound')
+          return soundModule
+        return {}
+      })
+
+      cb?.(...modules)
+    }
+  }
   // GBF 官方 createjs 末尾用 AMD `define({...})` 导出，没有 RequireJS 时
   // 我们把模块对象直接挂到 window.createjs；同时兼容 define(name, deps, factory) 形式
   if (typeof w.define !== 'function') {
@@ -239,10 +291,226 @@ function setupGlobals() {
 function loadImage(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image()
+    img.crossOrigin = 'anonymous'
+    const timer = window.setTimeout(() => {
+      img.onload = null
+      img.onerror = null
+      reject(new Error(`图片加载超时: ${src}`))
+    }, assetLoadTimeoutMs)
+
     img.onload = () => resolve(img)
     img.onerror = () => reject(new Error(`图片加载失败: ${src}`))
+    img.onload = () => {
+      window.clearTimeout(timer)
+      resolve(img)
+    }
+    img.onerror = () => {
+      window.clearTimeout(timer)
+      reject(new Error(`图片加载失败: ${src}`))
+    }
     img.src = src
   })
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(message))
+    }, ms)
+
+    promise
+      .then((value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      })
+      .catch((error) => {
+        window.clearTimeout(timer)
+        reject(error)
+      })
+  })
+}
+
+function normalizeAssetId(id: string) {
+  return id.replace(/\.png$/i, '')
+}
+
+function deriveScriptIdFromImageId(id: string) {
+  return normalizeAssetId(id).replace(/_[a-z]$/i, '')
+}
+
+function extractAssetVariant(scriptId: string) {
+  return scriptId.match(/^[a-z]+_\d+_(\d+)/i)?.[1] ?? null
+}
+
+function shouldHideCharacterForSpecial(scriptId: string) {
+  return !/^nsp_\d+_\d+$/i.test(scriptId)
+}
+
+function getWorkerProxyBase() {
+  return configuredProxyBase || window.location.origin
+}
+
+function getRemoteVersionUrl() {
+  return `${getWorkerProxyBase()}/version`
+}
+
+function getRemoteScriptUrl(scriptId: string, version: string) {
+  return `${getWorkerProxyBase()}/js/cjs/${scriptId}.js?version=${version}`
+}
+
+function getRemoteImageUrl(imageId: string) {
+  return `${getWorkerProxyBase()}/img/cjs/${imageId}.png`
+}
+
+function groupImageIdsByScriptId(imageIds: string[]) {
+  const groups = new Map<string, string[]>()
+
+  for (const imageId of imageIds) {
+    const normalizedId = normalizeAssetId(imageId)
+    const scriptId = deriveScriptIdFromImageId(normalizedId)
+    const group = groups.get(scriptId)
+
+    if (group) {
+      if (!group.includes(normalizedId))
+        group.push(normalizedId)
+      continue
+    }
+
+    groups.set(scriptId, [normalizedId])
+  }
+
+  return Array.from(groups, ([scriptId, groupedImageIds]) => ({
+    scriptId,
+    imageIds: groupedImageIds,
+  }))
+}
+
+async function hasRemoteScript(scriptId: string, version: string) {
+  const cacheKey = `${version}:${scriptId}`
+  if (remoteScriptAvailabilityCache.has(cacheKey))
+    return remoteScriptAvailabilityCache.get(cacheKey)!
+
+  const scriptUrl = getRemoteScriptUrl(scriptId, version)
+  const request = withTimeout(fetch(scriptUrl), remoteRequestTimeoutMs, `脚本探测超时: ${scriptId}`)
+    .then(async (response) => {
+      return response.ok
+    })
+    .catch(() => false)
+
+  remoteScriptAvailabilityCache.set(cacheKey, request)
+  return request
+}
+
+async function getCharacterManifest() {
+  if (!characterManifestPromise) {
+    characterManifestPromise = fetch(characterDataUrl)
+      .then(async (response) => {
+        if (!response.ok)
+          throw new Error('角色资源索引加载失败')
+
+        const data = await response.json() as CharacterManifestPayload
+        return {
+          ...(data.characters ?? {}),
+          ...(data.skins ?? {}),
+        }
+      })
+      .catch((error) => {
+        characterManifestPromise = null
+        throw error
+      })
+  }
+
+  return await characterManifestPromise
+}
+
+async function getRemoteAssetVersion() {
+  if (!remoteVersionPromise) {
+    remoteVersionPromise = withTimeout(fetch(getRemoteVersionUrl()), remoteRequestTimeoutMs, '版本接口请求超时，请检查 Worker 是否可用')
+      .then(async (response) => {
+        if (!response.ok)
+          throw new Error('Worker 代理版本接口请求失败，请检查 VITE_GBF_PROXY_BASE 或同源路由配置')
+
+        const contentType = response.headers.get('content-type') ?? ''
+        if (!contentType.includes('application/json')) {
+          throw new Error('Worker 代理版本接口返回了非 JSON 内容，请确认本地 Worker 已启动，或 Vite 已把 /version 代理到 Worker')
+        }
+
+        const data = await response.json() as VersionPayload
+        if (!data.version || !/^\d+$/.test(data.version))
+          throw new Error('Worker 代理未返回合法的资源版本号')
+
+        return data.version
+      })
+      .catch((error) => {
+        remoteVersionPromise = null
+        throw error
+      })
+  }
+
+  return await remoteVersionPromise
+}
+
+function createSpecialEffect(group: ResolvedAssetGroup, assetVersion: string): EffectItem {
+  return {
+    key: group.scriptId,
+    label: '奥义动画',
+    images: group.imageIds,
+    scriptId: group.scriptId,
+    assetVersion,
+    hideCharacter: shouldHideCharacterForSpecial(group.scriptId),
+  }
+}
+
+async function resolveAvailableAssetGroup(imageIds: string[], assetVersion: string, preferredVariant?: string | null) {
+  const groups = groupImageIdsByScriptId(imageIds)
+  const prioritizedGroups = preferredVariant
+    ? [
+        ...groups.filter(group => group.scriptId.endsWith(`_${preferredVariant}`)),
+        ...groups.filter(group => extractAssetVariant(group.scriptId) === preferredVariant && !group.scriptId.endsWith(`_${preferredVariant}`)),
+        ...groups.filter(group => extractAssetVariant(group.scriptId) !== preferredVariant),
+      ]
+    : groups
+
+  for (const group of prioritizedGroups) {
+    if (!(await hasRemoteScript(group.scriptId, assetVersion)))
+      continue
+
+    return group
+  }
+
+  return null
+}
+
+async function resolveCharacterAssets(characterId: string): Promise<ResolvedCharacterAssets> {
+  const [manifest, assetVersion] = await Promise.all([
+    getCharacterManifest(),
+    getRemoteAssetVersion(),
+  ])
+  const entry = manifest[characterId]
+  if (!entry)
+    throw new Error(`未找到角色 ${characterId} 的资源索引`)
+
+  const npcImages = entry.npc ?? []
+  const specialImages = entry.special ?? []
+  const npcGroup = await resolveAvailableAssetGroup(npcImages, assetVersion)
+  if (!npcGroup)
+    throw new Error(`未找到角色 ${characterId} 的远程本体动作资源，请检查 Worker 代理与版本号接口`)
+
+  const specialGroup = await resolveAvailableAssetGroup(specialImages, assetVersion, extractAssetVariant(npcGroup.scriptId))
+  const effects = specialGroup ? [createSpecialEffect(specialGroup, assetVersion)] : []
+
+  return {
+    assetVersion,
+    npcScriptId: npcGroup.scriptId,
+    npcImageIds: npcGroup.imageIds,
+    effects,
+  }
+}
+
+async function ensureRuntimeReady() {
+  setupGlobals()
+  runtimeReadyPromise ??= loadScript(`${localRuntimeBase}/createjs.js`)
+  await runtimeReadyPromise
 }
 
 const scriptCache = new Map<string, Promise<void>>()
@@ -256,13 +524,30 @@ function loadScript(src: string) {
       return
     }
     const el = document.createElement('script')
+    const timer = window.setTimeout(() => {
+      el.onload = null
+      el.onerror = null
+      el.remove()
+      reject(new Error(`脚本加载超时: ${src}`))
+    }, assetLoadTimeoutMs)
     el.src = src
     el.async = false
     el.dataset.cjs = src
-    el.onload = () => resolve()
-    el.onerror = () => reject(new Error(`脚本加载失败: ${src}`))
+    el.onload = () => {
+      window.clearTimeout(timer)
+      resolve()
+    }
+    el.onerror = () => {
+      window.clearTimeout(timer)
+      el.remove()
+      reject(new Error(`脚本加载失败: ${src}`))
+    }
     document.head.appendChild(el)
   })
+    .catch((error) => {
+      scriptCache.delete(src)
+      throw error
+    })
   scriptCache.set(src, promise)
   return promise
 }
@@ -271,8 +556,11 @@ function buildStage() {
   const canvas = canvasRef.value
   const w = window as any
   const createjs = w.createjs
+  const npcScriptId = currentNpcScriptId.value
   if (!canvas || !createjs)
     return
+  if (!npcScriptId)
+    throw new Error('未解析到角色本体资源')
 
   const dpr = window.devicePixelRatio || 1
   // 强制走 2d 渲染器，避免 GBF createjs 的 WebGL 分支在普通页面里无法正确初始化
@@ -286,7 +574,7 @@ function buildStage() {
   newStage.scaleX = dpr
   newStage.scaleY = dpr
 
-  const Ctor = w.lib?.[characterId]
+  const Ctor = w.lib?.[npcScriptId]
   if (!Ctor)
     throw new Error('未找到角色构造函数')
 
@@ -298,8 +586,8 @@ function buildStage() {
   newStage.addChild(npc)
   characterClip.value = npc
 
-  // 顶层 npc 是一个 1 帧的 MovieClip，里面 npc_3040638000_01 才是真正带动作 label 的容器
-  const inner = npc[characterId] ?? npc
+  // 顶层 npc 是一个 1 帧的 MovieClip，里面 npc_xxx 才是真正带动作 label 的容器
+  const inner = npc[npcScriptId] ?? npc
   motionRoot.value = inner
 
   stage.value = newStage
@@ -348,10 +636,11 @@ function stopActiveEffect() {
 
 function getMotionClip(key: MotionKey) {
   const target = motionRoot.value
+  const npcScriptId = currentNpcScriptId.value
   if (!target)
     return null
 
-  return target[`${characterId}_${key}`] ?? null
+  return target[`${npcScriptId}_${key}`] ?? null
 }
 
 function clearMotionSequence() {
@@ -444,7 +733,7 @@ function isMotionActive(key: string) {
 function handleControlClick(item: ControlItem) {
   selectedControlKey.value = item.key
   if (item.type === 'effect') {
-    const effect = effects.find(candidate => candidate.key === item.key)
+    const effect = resolvedEffects.value.find(candidate => candidate.key === item.key)
     if (effect)
       playEffect(effect)
     return
@@ -481,8 +770,8 @@ function playEffect(effect: EffectItem, preserveCycleCount = false) {
     npc.visible = false
 
   const mc = new Ctor()
-  const sc = effect.scale ?? effectScale
-  const anchor = effect.anchor ?? effectAnchor
+  const sc = effectScale
+  const anchor = effectAnchor
   mc.scaleX = sc
   mc.scaleY = sc
   mc.x = stageWidth * anchor.x
@@ -524,7 +813,13 @@ function findTransparentIndex(palette: number[][]) {
 }
 
 function sanitizeGifName(name: string) {
-  return name.replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase()
+  return name
+    .replace(/[<>:"/\\|?*]+/g, '_')
+    .split('')
+    .map(char => char.charCodeAt(0) < 32 ? '_' : char)
+    .join('')
+    .replace(/[. ]+$/g, '')
+    .trim()
 }
 
 async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElement, quality: GifExportQualityOption) {
@@ -605,7 +900,7 @@ async function recordGifFrames(item: ControlItem, sourceCanvas: HTMLCanvasElemen
 
     try {
       if (item.type === 'effect') {
-        const effect = effects.find(candidate => candidate.key === item.key)
+        const effect = resolvedEffects.value.find(candidate => candidate.key === item.key)
         if (!effect)
           throw new Error('未找到要导出的特效配置')
         playEffect(effect)
@@ -632,6 +927,89 @@ function downloadGif(bytes: Uint8Array, fileName: string) {
   anchor.download = fileName
   anchor.click()
   URL.revokeObjectURL(url)
+}
+
+async function loadCharacter(characterId: string) {
+  const nextCharacterId = characterId.trim()
+  const loadToken = ++activeLoadToken
+
+  status.value = 'loading'
+  errorMessage.value = ''
+  exportErrorMessage.value = ''
+  selectedControlKey.value = 'wait'
+  currentMotion.value = 'wait'
+  motionCycleCount.value = 0
+  activeEffectCycleCount.value = 0
+  resolvedEffects.value = []
+  currentNpcScriptId.value = ''
+  disposeStage()
+
+  try {
+    if (!nextCharacterId)
+      throw new Error('请输入角色 ID')
+
+    await ensureRuntimeReady()
+    const assets = await resolveCharacterAssets(nextCharacterId)
+    if (loadToken !== activeLoadToken)
+      return
+
+    const w = window as any
+    w.Game.version = Number(assets.assetVersion) || assets.assetVersion
+    await Promise.all([
+      ...assets.npcImageIds.map(id =>
+        loadImage(getRemoteImageUrl(id)).then((img) => {
+          w.images[id] = img
+        }),
+      ),
+      loadScript(getRemoteScriptUrl(assets.npcScriptId, assets.assetVersion)),
+    ])
+    if (loadToken !== activeLoadToken)
+      return
+
+    currentNpcScriptId.value = assets.npcScriptId
+    resolvedEffects.value = []
+    buildStage()
+    status.value = 'ready'
+
+    void preloadEffects(assets.effects, loadToken)
+  }
+  catch (e) {
+    if (loadToken !== activeLoadToken)
+      return
+
+    status.value = 'error'
+    errorMessage.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function preloadEffects(effects: EffectItem[], loadToken: number) {
+  if (!effects.length)
+    return
+
+  const w = window as any
+  const loadedEffects: EffectItem[] = []
+
+  for (const effect of effects) {
+    try {
+      await Promise.all([
+        ...effect.images.map(id =>
+          loadImage(getRemoteImageUrl(id)).then((img) => {
+            w.images[id] = img
+          }),
+        ),
+        loadScript(getRemoteScriptUrl(effect.scriptId, effect.assetVersion)),
+      ])
+      loadedEffects.push(effect)
+    }
+    catch {
+      // 特效资源缺失时降级为仅保留角色本体动作。
+    }
+  }
+
+  if (loadToken !== activeLoadToken)
+    return
+
+  resolvedEffects.value = loadedEffects
 }
 
 async function exportSelectedGif() {
@@ -679,7 +1057,9 @@ async function exportSelectedGif() {
     })
     gif.finish()
 
-    downloadGif(gif.bytes(), `${sanitizeGifName(characterId)}_${sanitizeGifName(item.key)}.gif`)
+    const gifPrefix = normalizedCharacterId.value || currentNpcScriptId.value || 'character'
+    const gifActionName = item.label || item.key
+    downloadGif(gif.bytes(), `${sanitizeGifName(gifPrefix)}_${sanitizeGifName(gifActionName)}.gif`)
   }
   catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -690,39 +1070,19 @@ async function exportSelectedGif() {
   }
 }
 
-onMounted(async () => {
-  try {
-    setupGlobals()
-    // 必须先加载 GBF 官方 createjs（提供 createjs.Config 等 API），再加载角色资源
-    await loadScript(`${cjsBase}/createjs.js`)
+onMounted(() => {
+  void loadCharacter(normalizedCharacterId.value)
+})
 
-    // 收集所有需要加载的图片与脚本（角色 + 命中/必杀特效）
-    const imageIds = new Set<string>([characterId])
-    const scriptIds = new Set<string>([characterId])
-    for (const effect of effects) {
-      scriptIds.add(effect.scriptId)
-      for (const img of effect.images) imageIds.add(img)
-    }
+watch(normalizedCharacterId, (nextCharacterId, previousCharacterId) => {
+  if (!canvasRef.value || nextCharacterId === previousCharacterId)
+    return
 
-    const w = window as any
-    await Promise.all([
-      ...Array.from(imageIds).map(id =>
-        loadImage(`${cjsBase}/${id}.png`).then((img) => {
-          w.images[id] = img
-        }),
-      ),
-      ...Array.from(scriptIds).map(id => loadScript(`${cjsBase}/${id}.js`)),
-    ])
-    buildStage()
-    status.value = 'ready'
-  }
-  catch (e) {
-    status.value = 'error'
-    errorMessage.value = e instanceof Error ? e.message : String(e)
-  }
+  void loadCharacter(nextCharacterId)
 })
 
 onBeforeUnmount(() => {
+  activeLoadToken += 1
   disposeStage()
 })
 </script>
@@ -731,23 +1091,6 @@ onBeforeUnmount(() => {
   <div class="mx-auto max-w-[980px] w-full px-5 sm:px-8">
     <section class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
       <div class="apple-stage-shell">
-        <div class="mb-4 flex flex-wrap items-center gap-2 text-white/72">
-          <span class="apple-dark-chip-status">
-            <i
-              class="h-2 w-2 rounded-full"
-              :class="status === 'ready'
-                ? 'bg-[#30d158]'
-                : status === 'loading'
-                  ? 'animate-pulse bg-[#ffd60a]'
-                  : 'bg-[#ff453a]'"
-            />
-            {{ status === 'ready' ? '就绪' : status === 'loading' ? '加载中' : '失败' }}
-          </span>
-          <span class="apple-dark-chip">
-            {{ characterId }}
-          </span>
-        </div>
-
         <div class="relative mx-auto max-w-[360px] w-full" :style="{ aspectRatio: `${stageWidth} / ${stageHeight}` }">
           <canvas
             ref="canvasRef"
@@ -769,12 +1112,22 @@ onBeforeUnmount(() => {
       <div class="apple-panel">
         <div class="flex flex-col gap-4">
           <div>
-            <p class="apple-kicker m-0 text-muted">
-              Actions
-            </p>
-            <p class="apple-body-compact m-0 mt-2 text-ink">
-              动作预览
-            </p>
+            <div flex items-center justify-between>
+              <p class="m-0 mt-2 apple-body-compact text-ink">
+                动作预览
+              </p>
+              <span class="apple-dark-chip-status">
+                <i
+                  class="h-2 w-2 rounded-full"
+                  :class="status === 'ready'
+                    ? 'bg-[#30d158]'
+                    : status === 'loading'
+                      ? 'animate-pulse bg-[#ffd60a]'
+                      : 'bg-[#ff453a]'"
+                />
+                {{ status === 'ready' ? '就绪' : status === 'loading' ? '加载中' : '失败' }}
+              </span>
+            </div>
           </div>
 
           <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -798,33 +1151,25 @@ onBeforeUnmount(() => {
         <div class="my-6 h-px bg-line/70" />
 
         <div class="flex flex-col gap-4">
-          <div>
-            <p class="apple-kicker m-0 text-muted">
-              Export
-            </p>
-            <p class="apple-body-compact m-0 mt-2 text-ink">
-              导出选项
-            </p>
-          </div>
+          <p class="m-0 mt-2 apple-body-compact text-ink">
+            导出选项
+          </p>
 
           <div>
-            <p class="apple-kicker m-0 text-muted">
+            <p class="m-0 apple-kicker text-muted">
               GIF 质量
             </p>
             <div class="mt-2 flex items-center justify-between gap-3 text-[12px] text-muted leading-[1.33] tracking-[-0.12px]">
               <span class="text-ink font-600">{{ selectedGifQuality.label }}</span>
               <span>{{ selectedGifQuality.width }}×{{ selectedGifQuality.height }} · {{ selectedGifQuality.maxColors }} 色</span>
             </div>
-            <p class="m-0 mt-1 text-[12px] text-muted leading-[1.33] tracking-[-0.12px]">
-              {{ selectedGifQuality.description }}
-            </p>
             <input
               v-model.number="selectedGifQualityIndex"
               type="range"
               min="0"
               :max="gifExportQualityOptions.length - 1"
               step="1"
-              class="bg-surfacesoft mt-3 h-2 w-full cursor-pointer appearance-none rounded-full accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+              class="mt-3 h-2 w-full cursor-pointer appearance-none rounded-full bg-surfacesoft accent-accent disabled:cursor-not-allowed disabled:opacity-50"
               :disabled="isExportingGif"
             >
             <div class="grid mt-2 gap-2 text-[11px] text-muted leading-[1.33] tracking-[-0.12px]" :style="{ gridTemplateColumns: `repeat(${gifExportQualityOptions.length}, minmax(0, 1fr))` }">
